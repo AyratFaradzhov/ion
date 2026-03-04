@@ -1,0 +1,12 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ion-grad" x1="4" y1="8" x2="60" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="30" fill="url(#ion-grad)"/>
+  <circle cx="32" cy="32" r="4" fill="white"/>
+  <ellipse cx="32" cy="32" rx="18" ry="10" stroke="white" stroke-width="2" fill="none" transform="rotate(-20 32 32)"/>
+  <ellipse cx="32" cy="32" rx="18" ry="10" stroke="white" stroke-width="2" fill="none" transform="rotate(20 32 32)"/>
+</svg>

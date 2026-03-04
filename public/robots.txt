@@ -1,0 +1,9 @@
+# ИОН Студия — правила для поисковых роботов
+User-agent: *
+Allow: /
+
+# Sitemap для быстрой индексации
+Sitemap: https://ionstudio.ru/sitemap.xml
+
+# При необходимости закрыть от индексации (раскомментировать):
+# Disallow: /admin
