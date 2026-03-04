@@ -5,11 +5,18 @@ import { useState, useRef } from "react";
 const MAX_FILES = 5;
 const MAX_FILE_SIZE_MB = 10;
 
-// Базовый URL API: в dev/production задаём через VITE_API_BASE_URL.
-// Если по какой‑то причине переменная не задана, по умолчанию используем 4000 порт.
-const RAW_API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL as string | undefined;
-const API_BASE_URL =
-  (RAW_API_BASE_URL && RAW_API_BASE_URL.trim().replace(/\/+$/, "")) || "http://localhost:4000";
+// API для обратной связи. Все URL должны быть HTTPS в production (избегаем Mixed Content).
+// — VITE_API_BASE_URL — ваш бэкенд (POST /api/contact, /api/chat-message)
+// — либо VITE_CONTACT_FORM_ENDPOINT / VITE_CHAT_FORM_ENDPOINT — Formspree и т.п.
+const env = (import.meta as any).env || {};
+const isProd = env.PROD === true;
+let rawApi = (env.VITE_API_BASE_URL as string)?.trim()?.replace(/\/+$/, "") || "";
+if (isProd && rawApi.startsWith("http://")) {
+  rawApi = rawApi.replace(/^http:\/\//i, "https://");
+}
+const API_BASE_URL = rawApi || (isProd ? "" : "http://localhost:4000");
+const CONTACT_FORM_ENDPOINT = (env.VITE_CONTACT_FORM_ENDPOINT as string)?.trim() || "";
+const CHAT_FORM_ENDPOINT = (env.VITE_CHAT_FORM_ENDPOINT as string)?.trim() || "";
 
 export function Contact() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -42,78 +49,71 @@ export function Contact() {
       return;
     }
     setIsSubmitting(true);
+    setErrorMessage(null);
 
     try {
-      const filesMeta = files.map((f) => ({
-        name: f.name,
-        size: f.size,
-        sizeReadable: formatSize(f.size),
-        type: f.type,
-      }));
+      if (CONTACT_FORM_ENDPOINT) {
+        // Режим внешней формы (Formspree и т.п.): отправка FormData
+        const formDataToSend = new FormData();
+        formDataToSend.append("name", formData.name);
+        formDataToSend.append("email", formData.email);
+        formDataToSend.append("company", formData.company);
+        formDataToSend.append("budget", formData.budget);
+        formDataToSend.append("message", formData.message);
+        formDataToSend.append("_subject", `Заявка с сайта: ${formData.name || formData.email}`);
+        files.forEach((file) => formDataToSend.append("files", file));
 
-      // Кодируем файлы в base64, чтобы отправить их на сервер
-      const filesPayload = await Promise.all(
-        files.map(
-          (file) =>
-            new Promise<{ name: string; type: string; size: number; content: string }>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => {
-                const result = reader.result as string | ArrayBuffer | null;
-                if (typeof result === "string") {
-                  // data:*/*;base64,XXXX
-                  const base64 = result.includes(",") ? result.split(",")[1] : result;
-                  resolve({
-                    name: file.name,
-                    type: file.type,
-                    size: file.size,
-                    content: base64,
-                  });
-                } else if (result instanceof ArrayBuffer) {
-                  const bytes = new Uint8Array(result);
-                  let binary = "";
-                  for (let i = 0; i < bytes.byteLength; i++) {
-                    binary += String.fromCharCode(bytes[i]);
+        const response = await fetch(CONTACT_FORM_ENDPOINT, {
+          method: "POST",
+          body: formDataToSend,
+        });
+        if (!response.ok) throw new Error("Failed to send");
+      } else {
+        // Режим своего API: JSON + base64 файлы
+        const filesMeta = files.map((f) => ({
+          name: f.name,
+          size: f.size,
+          sizeReadable: formatSize(f.size),
+          type: f.type,
+        }));
+        const filesPayload = await Promise.all(
+          files.map(
+            (file) =>
+              new Promise<{ name: string; type: string; size: number; content: string }>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  const result = reader.result as string | ArrayBuffer | null;
+                  if (typeof result === "string") {
+                    const base64 = result.includes(",") ? result.split(",")[1] : result;
+                    resolve({ name: file.name, type: file.type, size: file.size, content: base64 });
+                  } else if (result instanceof ArrayBuffer) {
+                    const bytes = new Uint8Array(result);
+                    let binary = "";
+                    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+                    resolve({ name: file.name, type: file.type, size: file.size, content: btoa(binary) });
+                  } else {
+                    resolve({ name: file.name, type: file.type, size: file.size, content: "" });
                   }
-                  resolve({
-                    name: file.name,
-                    type: file.type,
-                    size: file.size,
-                    content: btoa(binary),
-                  });
-                } else {
-                  resolve({
-                    name: file.name,
-                    type: file.type,
-                    size: file.size,
-                    content: "",
-                  });
-                }
-              };
-              reader.onerror = (err) => reject(err);
-              reader.readAsDataURL(file);
-            })
-        )
-      );
-
-      const response = await fetch(`${API_BASE_URL}/api/contact`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ ...formData, filesMeta, files: filesPayload }),
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to send");
+                };
+                reader.onerror = () => reject(new Error("File read error"));
+                reader.readAsDataURL(file);
+              })
+          )
+        );
+        const response = await fetch(`${API_BASE_URL}/api/contact`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...formData, filesMeta, files: filesPayload }),
+        });
+        if (!response.ok) throw new Error("Failed to send");
       }
 
       setFormData({ name: "", email: "", company: "", budget: "", message: "" });
       setFiles([]);
-      setErrorMessage(null);
       setShowSuccessDialog(true);
     } catch (error) {
       console.error(error);
-      setErrorMessage("Не удалось отправить письмо. Попробуйте ещё раз позже или напишите напрямую на почту.");
+      setErrorMessage("Не удалось отправить заявку. Проверьте интернет или напишите нам на почту.");
       setShowSuccessDialog(false);
     } finally {
       setIsSubmitting(false);
@@ -183,25 +183,35 @@ export function Contact() {
     setIsChatSending(true);
     setChatStatus("idle");
 
+    const name = chatName || formData.name;
+    const email = chatEmail || formData.email;
+
     try {
-      const response = await fetch(`${API_BASE_URL}/api/chat-message`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: chatName || formData.name,
-          email: chatEmail || formData.email,
-          company: formData.company,
-          message: chatMessage.trim(),
-        }),
-      });
-
-      if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        throw new Error(`Failed to send chat: ${response.status} ${text}`);
+      if (CHAT_FORM_ENDPOINT) {
+        const fd = new FormData();
+        fd.append("name", name);
+        fd.append("email", email);
+        fd.append("company", formData.company);
+        fd.append("message", chatMessage.trim());
+        fd.append("_subject", "Сообщение из чата на сайте");
+        const response = await fetch(CHAT_FORM_ENDPOINT, { method: "POST", body: fd });
+        if (!response.ok) throw new Error("Failed to send");
+      } else {
+        const response = await fetch(`${API_BASE_URL}/api/chat-message`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            email,
+            company: formData.company,
+            message: chatMessage.trim(),
+          }),
+        });
+        if (!response.ok) {
+          const text = await response.text().catch(() => "");
+          throw new Error(`Failed to send chat: ${response.status} ${text}`);
+        }
       }
-
       setChatStatus("sent");
       setChatMessage("");
     } catch (err) {

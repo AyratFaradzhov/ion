@@ -8,7 +8,8 @@ import { BackToTop } from "./BackToTop";
 import { PageTransition } from "./PageTransition";
 import { getSEO } from "../seo";
 
-const SITE_BASE_URL = "https://ionstudio.ru";
+const SITE_BASE_URL =
+  (import.meta as any).env?.VITE_SITE_URL?.trim?.() || "https://ion-studio.ru";
 
 export function Layout() {
   const location = useLocation();

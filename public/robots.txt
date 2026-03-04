@@ -3,7 +3,7 @@ User-agent: *
 Allow: /
 
 # Sitemap для быстрой индексации
-Sitemap: https://ionstudio.ru/sitemap.xml
+Sitemap: https://ion-studio.ru/sitemap.xml
 
 # При необходимости закрыть от индексации (раскомментировать):
 # Disallow: /admin
