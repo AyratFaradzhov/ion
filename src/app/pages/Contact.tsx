@@ -40,6 +40,29 @@ export function Contact() {
   const [chatStatus, setChatStatus] = useState<"idle" | "sent" | "error">("idle");
   const [consentAccepted, setConsentAccepted] = useState(false);
 
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const withRetry = async <T,>(fn: () => Promise<T>, retries = 2, delayMs = 1200): Promise<T> => {
+    let attempt = 0;
+    let lastError: unknown;
+    while (attempt <= retries) {
+      try {
+        if (attempt > 0) {
+          console.warn("[CONTACT FORM] retry attempt", attempt);
+        }
+        return await fn();
+      } catch (err) {
+        lastError = err;
+        attempt += 1;
+        if (attempt > retries) {
+          break;
+        }
+        await sleep(delayMs);
+      }
+    }
+    throw lastError;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) return;
@@ -52,68 +75,113 @@ export function Contact() {
     setErrorMessage(null);
 
     try {
-      if (CONTACT_FORM_ENDPOINT) {
-        // Режим внешней формы (Formspree и т.п.): отправка FormData
-        const formDataToSend = new FormData();
-        formDataToSend.append("name", formData.name);
-        formDataToSend.append("email", formData.email);
-        formDataToSend.append("company", formData.company);
-        formDataToSend.append("budget", formData.budget);
-        formDataToSend.append("message", formData.message);
-        formDataToSend.append("_subject", `Заявка с сайта: ${formData.name || formData.email}`);
-        files.forEach((file) => formDataToSend.append("files", file));
+      console.log("[CONTACT FORM] submit", {
+        hasFiles: files.length > 0,
+        endpointType: CONTACT_FORM_ENDPOINT ? "external" : "api",
+        apiBase: API_BASE_URL,
+      });
 
-        const response = await fetch(CONTACT_FORM_ENDPOINT, {
-          method: "POST",
-          body: formDataToSend,
+      if (CONTACT_FORM_ENDPOINT) {
+        await withRetry(async () => {
+          const formDataToSend = new FormData();
+          formDataToSend.append("name", formData.name);
+          formDataToSend.append("email", formData.email);
+          formDataToSend.append("company", formData.company);
+          formDataToSend.append("budget", formData.budget);
+          formDataToSend.append("message", formData.message);
+          formDataToSend.append("_subject", `Заявка с сайта: ${formData.name || formData.email}`);
+          files.forEach((file) => formDataToSend.append("files", file));
+
+          console.log("[CONTACT FORM] sending external request", { url: CONTACT_FORM_ENDPOINT });
+          const response = await fetch(CONTACT_FORM_ENDPOINT, {
+            method: "POST",
+            body: formDataToSend,
+          });
+          console.log("[CONTACT FORM] external response", { status: response.status });
+          if (!response.ok) {
+            throw new Error(`External form error: ${response.status}`);
+          }
         });
-        if (!response.ok) throw new Error("Failed to send");
       } else {
-        // Режим своего API: JSON + base64 файлы
-        const filesMeta = files.map((f) => ({
-          name: f.name,
-          size: f.size,
-          sizeReadable: formatSize(f.size),
-          type: f.type,
-        }));
-        const filesPayload = await Promise.all(
-          files.map(
-            (file) =>
-              new Promise<{ name: string; type: string; size: number; content: string }>((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => {
-                  const result = reader.result as string | ArrayBuffer | null;
-                  if (typeof result === "string") {
-                    const base64 = result.includes(",") ? result.split(",")[1] : result;
-                    resolve({ name: file.name, type: file.type, size: file.size, content: base64 });
-                  } else if (result instanceof ArrayBuffer) {
-                    const bytes = new Uint8Array(result);
-                    let binary = "";
-                    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-                    resolve({ name: file.name, type: file.type, size: file.size, content: btoa(binary) });
-                  } else {
-                    resolve({ name: file.name, type: file.type, size: file.size, content: "" });
-                  }
-                };
-                reader.onerror = () => reject(new Error("File read error"));
-                reader.readAsDataURL(file);
-              })
-          )
-        );
-        const response = await fetch(`${API_BASE_URL}/api/contact`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...formData, filesMeta, files: filesPayload }),
+        await withRetry(async () => {
+          const filesMeta = files.map((f) => ({
+            name: f.name,
+            size: f.size,
+            sizeReadable: formatSize(f.size),
+            type: f.type,
+          }));
+          const filesPayload = await Promise.all(
+            files.map(
+              (file) =>
+                new Promise<{ name: string; type: string; size: number; content: string }>((resolve, reject) => {
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    const result = reader.result as string | ArrayBuffer | null;
+                    if (typeof result === "string") {
+                      const base64 = result.includes(",") ? result.split(",")[1] : result;
+                      resolve({ name: file.name, type: file.type, size: file.size, content: base64 });
+                    } else if (result instanceof ArrayBuffer) {
+                      const bytes = new Uint8Array(result);
+                      let binary = "";
+                      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+                      resolve({ name: file.name, type: file.type, size: file.size, content: btoa(binary) });
+                    } else {
+                      resolve({ name: file.name, type: file.type, size: file.size, content: "" });
+                    }
+                  };
+                  reader.onerror = () => reject(new Error("File read error"));
+                  reader.readAsDataURL(file);
+                })
+            )
+          );
+
+          const url = `${API_BASE_URL || ""}/api/contact`;
+          console.log("[CONTACT FORM] sending API request", { url, hasFiles: files.length > 0 });
+          const response = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...formData, filesMeta, files: filesPayload }),
+          });
+
+          let data: any = null;
+          try {
+            data = await response.json();
+          } catch {
+            // ignore
+          }
+          console.log("[CONTACT FORM] API response", { status: response.status, data });
+
+          const isError =
+            !response.ok ||
+            (data && (data.success === false || data.ok === false));
+
+          if (isError) {
+            const serverError = data?.error || `Server error ${response.status}`;
+            const err: any = new Error(serverError);
+            err.details = data;
+            throw err;
+          }
         });
-        if (!response.ok) throw new Error("Failed to send");
       }
 
       setFormData({ name: "", email: "", company: "", budget: "", message: "" });
       setFiles([]);
       setShowSuccessDialog(true);
     } catch (error) {
-      console.error(error);
-      setErrorMessage("Не удалось отправить заявку. Проверьте интернет или напишите нам на почту.");
+      console.error("[CONTACT FORM] error", error);
+      const err = error as any;
+      const message: string = err?.message || "";
+      const details = err?.details;
+
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        setErrorMessage("Похоже, нет подключения к интернету. Проверьте сеть и попробуйте ещё раз.");
+      } else if (details?.error === "Validation error") {
+        setErrorMessage("Проверьте, что вы корректно заполнили имя, email и сообщение.");
+      } else if (/timeout/i.test(message)) {
+        setErrorMessage("Сервер долго не отвечает. Попробуйте ещё раз чуть позже или напишите на почту.");
+      } else {
+        setErrorMessage("Не удалось отправить заявку. Попробуйте ещё раз или напишите нам на почту.");
+      }
       setShowSuccessDialog(false);
     } finally {
       setIsSubmitting(false);
@@ -187,35 +255,64 @@ export function Contact() {
     const email = chatEmail || formData.email;
 
     try {
+      console.log("[CONTACT CHAT] submit", {
+        hasName: Boolean(name),
+        hasEmail: Boolean(email),
+        endpointType: CHAT_FORM_ENDPOINT ? "external" : "api",
+      });
+
       if (CHAT_FORM_ENDPOINT) {
-        const fd = new FormData();
-        fd.append("name", name);
-        fd.append("email", email);
-        fd.append("company", formData.company);
-        fd.append("message", chatMessage.trim());
-        fd.append("_subject", "Сообщение из чата на сайте");
-        const response = await fetch(CHAT_FORM_ENDPOINT, { method: "POST", body: fd });
-        if (!response.ok) throw new Error("Failed to send");
-      } else {
-        const response = await fetch(`${API_BASE_URL}/api/chat-message`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name,
-            email,
-            company: formData.company,
-            message: chatMessage.trim(),
-          }),
+        await withRetry(async () => {
+          const fd = new FormData();
+          fd.append("name", name);
+          fd.append("email", email);
+          fd.append("company", formData.company);
+          fd.append("message", chatMessage.trim());
+          fd.append("_subject", "Сообщение из чата на сайте");
+          console.log("[CONTACT CHAT] sending external request", { url: CHAT_FORM_ENDPOINT });
+          const response = await fetch(CHAT_FORM_ENDPOINT, { method: "POST", body: fd });
+          console.log("[CONTACT CHAT] external response", { status: response.status });
+          if (!response.ok) throw new Error(`External chat error: ${response.status}`);
         });
-        if (!response.ok) {
-          const text = await response.text().catch(() => "");
-          throw new Error(`Failed to send chat: ${response.status} ${text}`);
-        }
+      } else {
+        await withRetry(async () => {
+          const url = `${API_BASE_URL || ""}/api/chat-message`;
+          console.log("[CONTACT CHAT] sending API request", { url });
+          const response = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name,
+              email,
+              company: formData.company,
+              message: chatMessage.trim(),
+            }),
+          });
+
+          let data: any = null;
+          try {
+            data = await response.json();
+          } catch {
+            // ignore
+          }
+          console.log("[CONTACT CHAT] API response", { status: response.status, data });
+
+          const isError =
+            !response.ok ||
+            (data && (data.success === false || data.ok === false));
+
+          if (isError) {
+            const serverError = data?.error || `Server error ${response.status}`;
+            const err: any = new Error(serverError);
+            err.details = data;
+            throw err;
+          }
+        });
       }
       setChatStatus("sent");
       setChatMessage("");
     } catch (err) {
-      console.error("Chat send error:", err);
+      console.error("[CONTACT CHAT] error", err);
       setChatStatus("error");
     } finally {
       setIsChatSending(false);
